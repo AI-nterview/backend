@@ -4,59 +4,149 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 exports.createRoom = async (req, res) => {
     try {
-        const { name } = req.body;
+        const { name, candidateEmail } = req.body;
         const interviewerId = req.user.id;
+        const crypto = require('crypto'); 
 
-        // user must be authenticated to create a room
         if (!interviewerId) {
-            return res.status(401).json({ error: 'not authorized to create a room.' });
+            return res.status(401).json({ message: 'Not authorized to create a room.' });
         }
 
-        const newRoom = new Room({
-            name: name || `interview room ${Date.now()}`, // default name if not provided
-            interviewer: interviewerId,
-            status: 'pending'
-        });
+        if (!candidateEmail) {
+            return res.status(400).json({ message: 'Candidate email is required to create a room.' });
+        }
 
+        const normalizedCandidateEmail = candidateEmail.toLowerCase().trim();
+
+        if (req.user.email === normalizedCandidateEmail) {
+            return res.status(400).json({ message: 'Interviewer cannot invite themselves as a candidate.' });
+        }
+
+        let existingCandidate = await User.findOne({ email: normalizedCandidateEmail });
+
+        const roomDetails = {
+            name: name || `Interview Room ${Date.now()}`,
+            interviewer: interviewerId,
+            candidateEmail: normalizedCandidateEmail,
+            status: 'pending',
+        };
+
+        let invitationToken = null;
+
+        if (existingCandidate) {
+            roomDetails.candidate = existingCandidate._id;
+            roomDetails.status = 'pending';
+        } else {
+            invitationToken = crypto.randomBytes(20).toString('hex');
+            roomDetails.invitationToken = invitationToken;
+            roomDetails.status = 'awaiting_candidate_registration';
+        }
+
+        const newRoom = new Room(roomDetails);
         const savedRoom = await newRoom.save();
 
-        res.status(201).json({
-            message: 'room created successfully',
-            room: savedRoom
-        });
+        await savedRoom.populate('interviewer', 'name email role');
+        if (savedRoom.candidate) {
+            await savedRoom.populate('candidate', 'name email role');
+        }
+
+        if (existingCandidate) {
+            return res.status(201).json({
+                message: 'Room created and candidate assigned.',
+                room: savedRoom
+            });
+        } else {
+            return res.status(201).json({
+                message: 'Room created. Candidate not found. Please share the invitation link with the candidate.',
+                room: savedRoom,
+                invitationToken: invitationToken
+            });
+        }
 
     } catch (error) {
-        console.error('error creating room:', error);
-        res.status(500).json({ message: 'server error while creating room.' });
+        console.error('Error creating room:', error);
+        res.status(500).json({ message: 'Server error while creating room.' });
     }
 };
+// exports.joinRoom = async (req, res) => {
+//     try {
+//         const roomId = req.params.id;
+//         const candidateUserId = req.user.id;
+
+//         const room = await Room.findById(roomId);
+
+//         if (!room) {
+//             return res.status(404).json({ message: 'Room not found.' });
+//         }
+
+//         if (room.interviewer.toString() === candidateUserId) {
+//             return res.status(400).json({ message: 'Interviewer cannot join their own room as a candidate.' });
+//         }
+
+//         if (room.candidate && room.candidate.toString() !== candidateUserId) {
+//             return res.status(409).json({ message: 'This room already has a candidate assigned.' });
+//         }
+
+//         if (room.candidate && room.candidate.toString() === candidateUserId) {
+//             await room.populate(['interviewer', 'candidate'], 'name email role');
+//             return res.status(200).json({ message: 'You are already the candidate in this room.', room });
+//         }
+
+//         room.candidate = candidateUserId;
+
+//         await room.save();
+//         await room.populate(['interviewer', 'candidate'], 'name email role');
+
+//         res.status(200).json({ message: 'Successfully joined the room as a candidate.', room });
+
+//     } catch (error) {
+//         console.error('Error joining room:', error);
+//         if (error.kind === 'ObjectId') {
+//             return res.status(400).json({ message: 'Invalid Room ID or User ID format.' });
+//         }
+//         res.status(500).json({ message: 'Server error while trying to join room.' });
+//     }
+// };
 
 exports.getRoomById = async (req, res) => {
     try {
         const roomId = req.params.id;
+        const currentUserId = req.user.id;
+
         const room = await Room.findById(roomId)
-            .populate('interviewer', 'name email role'); // populate interviewer details
+            .populate('interviewer', 'name email role')
+            .populate('candidate', 'name email role');
 
         if (!room) {
-            return res.status(404).json({ message: 'room not found.' });
+            return res.status(404).json({ message: 'Room not found.' });
         }
 
-        // check if the current user is the interviewer or an admin
-        if (req.user.id !== room.interviewer._id.toString()) {
-            const currentUser = await User.findById(req.user.id);
-            if (!currentUser || currentUser.role !== 'admin') {
-                return res.status(403).json({ message: 'not authorized to access this room.' });
-            }
+        const isInterviewer = room.interviewer?._id.toString() === currentUserId;
+        const isCandidate = room.candidate?._id.toString() === currentUserId;
+        
+        let isAdmin = false;
+        if (!isInterviewer && !isCandidate) { 
+            isAdmin = req.user.role === 'admin'; 
+        }
+
+        if (!isInterviewer && !isCandidate && !isAdmin) {
+            return res.status(403).json({ message: 'Not authorized to access this room.' });
+        }
+
+        if (isInterviewer && room.status === 'awaiting_candidate_registration' && !room.candidate) {
+            const roomObject = room.toObject();
+            roomObject.awaitingInfo = `Awaiting registration from ${room.candidateEmail}. Invitation token: ${room.invitationToken || 'N/A (should be set)'}`;
+            return res.status(200).json(roomObject);
         }
 
         res.status(200).json(room);
 
     } catch (error) {
-        console.error('error fetching room:', error);
-        if (error.kind === 'ObjectId') { // handle invalid ObjectId format for room id
-            return res.status(400).json({ message: 'invalid room id format.' });
+        console.error('Error fetching room by id:', error);
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: 'Invalid room id format.' });
         }
-        res.status(500).json({ message: 'server error while fetching room.' });
+        res.status(500).json({ message: 'Server error while fetching room.' });
     }
 };
 
@@ -65,9 +155,11 @@ exports.getAllRoomsForUser = async (req, res) => {
         const interviewerId = req.user.id;
 
         const rooms = await Room.find({ interviewer: interviewerId })
-            .sort({ createdAt: -1 }); // sort by newest first
+            .sort({ createdAt: -1 })
+            .populate('interviewer', 'name email')
+            .populate('candidate', 'name email role')
 
-             res.status(200).json({ rooms: rooms || [] });
+        res.status(200).json({ rooms: rooms || [] });
 
     } catch (error) {
         console.error('error fetching rooms for user:', error);
@@ -216,8 +308,6 @@ Task: Describe how to implement a function that reverses a string.
             }
             return res.status(500).json({ message: 'failed to generate tasks. ai response was empty.' });
         }
-
-        console.log(`received raw response text from ai for room ${roomId}. length: ${generatedText.length}:\n${generatedText}`);
 
         let taskDescription = generatedText.replace(/^Task:\s*/im, '').trim();
 

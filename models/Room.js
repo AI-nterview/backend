@@ -8,15 +8,12 @@ const RoomSchema = new Schema({
         maxlength: 100,
         required: false
     },
-    interviewer: {
-        type: Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    },
-    candidate: {
-        type: Schema.Types.ObjectId,
-        ref: 'User',
-        required: false
+    interviewer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    candidate: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    candidateEmail: { type: String, trim: true, lowercase: true, sparse: true },
+    invitationToken: {
+        type: String,
+        sparse: true
     },
     task: {
         type: String,
@@ -25,7 +22,7 @@ const RoomSchema = new Schema({
     },
     status: {
         type: String,
-        enum: ['pending', 'active', 'completed', 'cancelled'],
+        enum: ['pending', 'active', 'completed', 'cancelled', 'awaiting_candidate_registration'],
         default: 'pending'
     },
 }, {

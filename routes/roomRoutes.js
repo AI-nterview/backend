@@ -23,6 +23,7 @@ router.put('/:id', protect, roomController.updateRoom); // add validators if nee
 // delete /api/rooms/:id
 router.delete('/:id', protect, roomController.deleteRoom);
 
+
 // generate ai tasks for a specific room (protected)
 // post /api/rooms/:id/generate-tasks
 router.post('/:id/generate-tasks', protect, roomController.generateTasksForRoom); 

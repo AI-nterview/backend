@@ -23,7 +23,8 @@ const registerSchema = Joi.object({
     role: Joi.string().valid('interviewer', 'candidate').optional()
         .messages({
             'any.only': 'Role must be one of [interviewer, candidate].'
-        })
+        }),
+    inviteToken: Joi.string().hex().length(40).optional()
 });
 
 const loginSchema = Joi.object({

@@ -1,56 +1,88 @@
 const User = require('../models/User');
+const Room = require('../models/Room');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { registerSchema, loginSchema } = require('../validators/authValidators');
 
 exports.register = async (req, res) => {
     try {
-        // validate request body
         const { error, value } = registerSchema.validate(req.body, { abortEarly: false });
         if (error) {
-            const errorsObject = {};
-            error.details.forEach(detail => {
-                const fieldName = detail.path.length > 0 ? detail.path[0] : 'general';
-                if (!errorsObject[fieldName]) {
-                    errorsObject[fieldName] = detail.message;
-                }
-            });
+            const errorsObject = {
+                general: error.details[0].message
+            };
             return res.status(400).json({ errors: errorsObject });
         }
 
-        const { name, email, password, role } = value;
+        const { name, email, password, role, inviteToken } = value;
+        const normalizedEmail = email.toLowerCase().trim();
 
-        // check if user already exists
-        const existingUser = await User.findOne({ email: email.toLowerCase() });
+
+
+
+        const existingUser = await User.findOne({ email: normalizedEmail });
         if (existingUser) {
-            return res.status(400).json({ message: 'user with this email already exists.' });
+            return res.status(400).json({ message: 'User with this email already exists.' });
         }
 
-        // hash password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const newUser = new User({
             name,
-            email: email.toLowerCase(),
+            email: normalizedEmail,
             password: hashedPassword,
-            role: role || 'interviewer' // default role
+            role: role || 'candidate', // Если регистрируется по инвайту, скорее всего кандидат
         });
-
         await newUser.save();
 
-        res.status(201).json({
-            message: 'user registered successfully!',
-            userId: newUser._id,
-            email: newUser.email,
-            role: newUser.role
-        });
+        let joinedRoom = null;
+        if (inviteToken) {
+            const roomToJoin = await Room.findOne({ invitationToken: inviteToken }); // (A)
+
+            if (roomToJoin) {
+                const emailMatch = roomToJoin.candidateEmail === normalizedEmail; // (B)
+                const candidateSlotAvailable = !roomToJoin.candidate; // (C)
+
+
+                if (emailMatch && candidateSlotAvailable) {
+                    roomToJoin.candidate = newUser._id;
+                    roomToJoin.invitationToken = undefined;
+                    roomToJoin.status = 'pending';
+                    await roomToJoin.save();
+                    joinedRoom = roomToJoin.toObject();
+                } else {
+                    if (!emailMatch) {
+                        console.warn(`[AUTH CTRL - REGISTER] CONDITION FAIL: Email mismatch. Invited: ${roomToJoin.candidateEmail}, Registered: ${normalizedEmail}`);
+                    }
+                    if (!candidateSlotAvailable) {
+                        console.warn(`[AUTH CTRL - REGISTER] CONDITION FAIL: Candidate slot not available. Already assigned to: ${roomToJoin.candidate}`);
+                    }
+                }
+            }
+
+
+            const payload = { userId: newUser._id, email: newUser.email, name: newUser.name, role: newUser.role };
+            const authToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+
+            res.status(201).json({
+                message: 'User registered successfully!',
+                token: authToken,
+                user: {
+                    id: newUser._id,
+                    email: newUser.email,
+                    name: newUser.name,
+                    role: newUser.role
+                },
+                joinedRoomId: joinedRoom ? joinedRoom._id : null
+            });
+        }
 
     } catch (error) {
-        console.error('error during registration:', error);
-        res.status(500).json({ message: 'server error during registration.' });
+        res.status(500).json({ message: 'Server error during registration.' });
     }
-};
+}
 
 exports.login = async (req, res) => {
     try {
