@@ -65,14 +65,9 @@ exports.getAllRoomsForUser = async (req, res) => {
         const interviewerId = req.user.id;
 
         const rooms = await Room.find({ interviewer: interviewerId })
-            .populate('interviewer', 'name email')
             .sort({ createdAt: -1 }); // sort by newest first
 
-        if (!rooms || rooms.length === 0) {
-            return res.status(200).json({ message: 'no rooms found for this user.', rooms: [] });
-        }
-
-        res.status(200).json({ rooms });
+             res.status(200).json({ rooms: rooms || [] });
 
     } catch (error) {
         console.error('error fetching rooms for user:', error);
