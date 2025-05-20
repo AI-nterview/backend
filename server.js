@@ -53,9 +53,9 @@ mongoose.connect(MONGODB_URI, {
     .then(() => console.log('MongoDB connected successfully!'))
     .catch(err => console.error('MongoDB connection error:', err));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/rooms', roomRoutes);
+app.use('/auth', authRoutes);
+app.use('/users', userRoutes);
+app.use('/rooms', roomRoutes);
 app.get('/', (req, res) => {
     res.send('Hello from Interview Platform Backend!');
 });
