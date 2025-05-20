@@ -1,12 +1,12 @@
 const Room = require('../models/Room');
 const User = require('../models/User');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const crypto = require('crypto');
 
 exports.createRoom = async (req, res) => {
     try {
         const { name, candidateEmail } = req.body;
         const interviewerId = req.user.id;
-        const crypto = require('crypto'); 
 
         if (!interviewerId) {
             return res.status(401).json({ message: 'Not authorized to create a room.' });
@@ -28,7 +28,7 @@ exports.createRoom = async (req, res) => {
             name: name || `Interview Room ${Date.now()}`,
             interviewer: interviewerId,
             candidateEmail: normalizedCandidateEmail,
-            status: 'pending',
+            // status is determined below based on existingCandidate
         };
 
         let invitationToken = null;
@@ -68,45 +68,6 @@ exports.createRoom = async (req, res) => {
         res.status(500).json({ message: 'Server error while creating room.' });
     }
 };
-// exports.joinRoom = async (req, res) => {
-//     try {
-//         const roomId = req.params.id;
-//         const candidateUserId = req.user.id;
-
-//         const room = await Room.findById(roomId);
-
-//         if (!room) {
-//             return res.status(404).json({ message: 'Room not found.' });
-//         }
-
-//         if (room.interviewer.toString() === candidateUserId) {
-//             return res.status(400).json({ message: 'Interviewer cannot join their own room as a candidate.' });
-//         }
-
-//         if (room.candidate && room.candidate.toString() !== candidateUserId) {
-//             return res.status(409).json({ message: 'This room already has a candidate assigned.' });
-//         }
-
-//         if (room.candidate && room.candidate.toString() === candidateUserId) {
-//             await room.populate(['interviewer', 'candidate'], 'name email role');
-//             return res.status(200).json({ message: 'You are already the candidate in this room.', room });
-//         }
-
-//         room.candidate = candidateUserId;
-
-//         await room.save();
-//         await room.populate(['interviewer', 'candidate'], 'name email role');
-
-//         res.status(200).json({ message: 'Successfully joined the room as a candidate.', room });
-
-//     } catch (error) {
-//         console.error('Error joining room:', error);
-//         if (error.kind === 'ObjectId') {
-//             return res.status(400).json({ message: 'Invalid Room ID or User ID format.' });
-//         }
-//         res.status(500).json({ message: 'Server error while trying to join room.' });
-//     }
-// };
 
 exports.getRoomById = async (req, res) => {
     try {
@@ -123,10 +84,10 @@ exports.getRoomById = async (req, res) => {
 
         const isInterviewer = room.interviewer?._id.toString() === currentUserId;
         const isCandidate = room.candidate?._id.toString() === currentUserId;
-        
+
         let isAdmin = false;
-        if (!isInterviewer && !isCandidate) { 
-            isAdmin = req.user.role === 'admin'; 
+        if (!isInterviewer && !isCandidate) {
+            isAdmin = req.user.role === 'admin';
         }
 
         if (!isInterviewer && !isCandidate && !isAdmin) {
@@ -152,45 +113,55 @@ exports.getRoomById = async (req, res) => {
 
 exports.getAllRoomsForUser = async (req, res) => {
     try {
-        const interviewerId = req.user.id;
+        const userId = req.user.id;
+        // Pagination parameters (page, limit, skip) are removed.
+        // The find query will now return all matching documents.
 
-        const rooms = await Room.find({ interviewer: interviewerId })
+        const rooms = await Room.find({
+            $or: [
+                { interviewer: userId },
+                { candidate: userId }
+            ]
+        })
             .sort({ createdAt: -1 })
+            // .skip(skip) and .limit(limit) are removed
             .populate('interviewer', 'name email')
-            .populate('candidate', 'name email role')
+            .populate('candidate', 'name email role');
 
-        res.status(200).json({ rooms: rooms || [] });
+        // totalRooms, currentPage, totalPages are removed from the response.
+        res.status(200).json({
+            rooms: rooms || []
+            // No pagination fields in the response
+        });
 
     } catch (error) {
-        console.error('error fetching rooms for user:', error);
-        res.status(500).json({ message: 'server error while fetching rooms.' });
+        console.error('Error fetching rooms for user:', error);
+        res.status(500).json({ message: 'Server error while fetching rooms.' });
     }
 };
 
 exports.updateRoom = async (req, res) => {
     try {
         const roomId = req.params.id;
-        const { name, status } = req.body; // fields that can be updated
+        const { name, status } = req.body;
         const userId = req.user.id;
 
         const room = await Room.findById(roomId);
 
         if (!room) {
-            return res.status(404).json({ message: 'room not found.' });
+            return res.status(404).json({ message: 'Room not found.' });
         }
 
-        // only the interviewer or an admin can update the room
         if (room.interviewer.toString() !== userId) {
             const currentUser = await User.findById(userId);
             if (!currentUser || currentUser.role !== 'admin') {
-                return res.status(403).json({ message: 'not authorized to update this room.' });
+                return res.status(403).json({ message: 'Not authorized to update this room.' });
             }
         }
 
-        // update only provided fields
         if (name !== undefined) room.name = name;
         if (status !== undefined) {
-            const allowedStatuses = ['pending', 'active', 'completed', 'cancelled'];
+            const allowedStatuses = ['pending', 'active', 'completed', 'cancelled', 'awaiting_candidate_registration']; // Added 'awaiting_candidate_registration' for completeness
             if (!allowedStatuses.includes(status)) {
                 return res.status(400).json({ message: `invalid status. allowed statuses are: ${allowedStatuses.join(', ')}` });
             }
@@ -198,7 +169,12 @@ exports.updateRoom = async (req, res) => {
         }
 
         const updatedRoom = await room.save();
+        // Populate after saving to ensure populated fields are on the returned object
         await updatedRoom.populate('interviewer', 'name email role');
+        if (updatedRoom.candidate) { // Check if candidate exists before populating
+            await updatedRoom.populate('candidate', 'name email role');
+        }
+
 
         res.status(200).json({
             message: 'room updated successfully',
@@ -207,7 +183,6 @@ exports.updateRoom = async (req, res) => {
 
     } catch (error) {
         console.error('error updating room:', error);
-        // handle specific mongoose errors
         if (error.kind === 'ObjectId' && error.path === '_id') {
             return res.status(400).json({ message: 'invalid room id format.' });
         }
@@ -231,7 +206,6 @@ exports.deleteRoom = async (req, res) => {
             return res.status(404).json({ message: 'room not found.' });
         }
 
-        // only the interviewer or an admin can delete the room
         if (room.interviewer.toString() !== userId) {
             const currentUser = await User.findById(userId);
             if (!currentUser || currentUser.role !== 'admin') {
@@ -252,13 +226,12 @@ exports.deleteRoom = async (req, res) => {
     }
 };
 
-// task generation using google generative ai
 exports.generateTasksForRoom = async (req, res) => {
     try {
         const userId = req.user.id;
         const roomId = req.params.id;
         const { topic, difficulty } = req.body;
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // using gemini/gemma models
+        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
         if (!GEMINI_API_KEY) {
             return res.status(500).json({ message: 'ai task generation is not configured on the server.' });
@@ -272,7 +245,6 @@ exports.generateTasksForRoom = async (req, res) => {
         if (!room) {
             return res.status(404).json({ message: 'room not found.' });
         }
-        // authorization check: user must be interviewer or admin
         if (room.interviewer.toString() !== userId) {
             const currentUser = await User.findById(userId);
             if (!currentUser || currentUser.role !== 'admin') {
@@ -281,16 +253,33 @@ exports.generateTasksForRoom = async (req, res) => {
         }
 
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemma-3-27b-it" }); // current model for task generation
+        const model = genAI.getGenerativeModel({ model: "gemma-3-27b-it" });
         const MAX_TASK_LENGTH_CHARS = 1000;
 
         const prompt = `Generate exactly 1 (one) programming interview task for a candidate with ${difficulty}-level skills on the topic of "${topic}".
-The task should be a clear and concise problem description suitable for a live coding interview.
-The total length of the task description MUST NOT exceed ${MAX_TASK_LENGTH_CHARS} characters.
-Do not include solutions, hints, or any introductory/concluding phrases beyond the task itself.
-Format the task starting with "Task:" on a new line. Do NOT use "---" as a separator.
-Example:
-Task: Describe how to implement a function that reverses a string.
+The task must follow the style and structure of a Codewars kata.
+
+Output must include the following sections in this strict order:
+
+1. A concise task description starting with "Task:", fully commented out using JavaScript line comments (//). Do NOT include introductory or concluding phrases. The description should be clear and no longer than ${MAX_TASK_LENGTH_CHARS} characters.
+
+2. Predefined input variable needed to call the function.
+
+3. A function definition with the correct signature, including a "// your code here" comment inside the body.
+
+Do NOT include solutions, hints, explanations, or separators like "---".
+
+Example output:
+
+// Task: Implement a function that returns true if a number is even, otherwise false.
+
+const num = 4;
+
+function isEven(num) {
+  // your code here
+}
+
+return isEven(num);
 `;
 
         const generationConfig = {
@@ -311,12 +300,6 @@ Task: Describe how to implement a function that reverses a string.
 
         let taskDescription = generatedText.replace(/^Task:\s*/im, '').trim();
 
-        // a previous version had truncation here, ensure it's not needed or re-add if desired
-        // if (taskDescription.length > MAX_TASK_LENGTH_CHARS) {
-        //     console.warn(`ai generated a task longer than ${MAX_TASK_LENGTH_CHARS} chars. truncating.`);
-        //     taskDescription = taskDescription.substring(0, MAX_TASK_LENGTH_CHARS) + "... (truncated)";
-        // }
-
         if (taskDescription.length <= 10) {
             console.warn(`ai generated text but no valid task was extracted or task too short. raw text: ${generatedText.substring(0, 500)}...`);
             return res.status(500).json({ message: 'ai generated a response, but no valid task could be extracted or task is too short. please try a different prompt or parameters.' });
@@ -326,21 +309,23 @@ Task: Describe how to implement a function that reverses a string.
         const updatedRoom = await room.save();
 
         await updatedRoom.populate('interviewer', 'name email role');
+        if (updatedRoom.candidate) {
+            await updatedRoom.populate('candidate', 'name email role');
+        }
 
         res.status(200).json({
-            message: `successfully generated 1 task using gemma.`, // assuming gemma model based on model id
+            message: `Task successfully generated.`,
             room: updatedRoom
         });
 
     } catch (error) {
         console.error(`error generating tasks with ai for room ${req.params.id}:`, error);
-        // handle specific ai api errors
         if (error.message && (error.message.includes('Candidate was blocked') || error.message.includes('SAFETY') || error.message.includes('Recitation'))) {
-            return res.status(400).json({ message: 'content generation blocked by ai safety/policy filters. try a different prompt or topic.', details: error.message });
+            return res.status(400).json({ message: 'Content generation blocked by AI safety/policy filters. Try a different prompt or topic.', details: error.message });
         }
         if (error.message && error.message.includes('quota')) {
-            return res.status(429).json({ message: 'api quota exceeded for ai. please try again later.', details: error.message });
+            return res.status(429).json({ message: 'API quota exceeded for AI. Please try again later.', details: error.message });
         }
-        res.status(500).json({ message: 'server error while generating tasks with ai.' });
+        res.status(500).json({ message: 'Server error while generating tasks with AI.' });
     }
 };

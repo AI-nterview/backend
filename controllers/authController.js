@@ -8,17 +8,19 @@ exports.register = async (req, res) => {
     try {
         const { error, value } = registerSchema.validate(req.body, { abortEarly: false });
         if (error) {
-            const errorsObject = {
-                general: error.details[0].message
-            };
+            const errorsObject = {};
+            error.details.forEach(detail => {
+                const fieldName = detail.path.length > 0 ? detail.path[0] : 'general';
+                if (!errorsObject[fieldName]) {
+                    errorsObject[fieldName] = [];
+                }
+                errorsObject[fieldName].push(detail.message);
+            });
             return res.status(400).json({ errors: errorsObject });
         }
 
-        const { name, email, password, role, inviteToken } = value;
+        const { name, email, password, role, inviteToken } = value; 
         const normalizedEmail = email.toLowerCase().trim();
-
-
-
 
         const existingUser = await User.findOne({ email: normalizedEmail });
         if (existingUser) {
@@ -32,25 +34,31 @@ exports.register = async (req, res) => {
             name,
             email: normalizedEmail,
             password: hashedPassword,
-            role: role || 'candidate', // Если регистрируется по инвайту, скорее всего кандидат
+            role: role || 'candidate',
         });
         await newUser.save();
+        console.log('New user saved:', newUser._id);
 
-        let joinedRoom = null;
+
+        let joinedRoomInfo = null;
         if (inviteToken) {
-            const roomToJoin = await Room.findOne({ invitationToken: inviteToken }); // (A)
+            console.log('[AUTH CTRL - REGISTER] Processing inviteToken:', inviteToken); // Лог 1
+            const roomToJoin = await Room.findOne({ invitationToken: inviteToken });
 
             if (roomToJoin) {
-                const emailMatch = roomToJoin.candidateEmail === normalizedEmail; // (B)
-                const candidateSlotAvailable = !roomToJoin.candidate; // (C)
+                console.log('[AUTH CTRL - REGISTER] Found room by inviteToken:', roomToJoin._id, 'Candidate email in room:', roomToJoin.candidateEmail); // Лог 2
+                const emailMatch = roomToJoin.candidateEmail === normalizedEmail;
+                const candidateSlotAvailable = !roomToJoin.candidate; // Проверяем, что поле candidate еще не занято
 
+                console.log(`[AUTH CTRL - REGISTER] Conditions - emailMatch: ${emailMatch} (Room: ${roomToJoin.candidateEmail}, User: ${normalizedEmail}), candidateSlotAvailable: ${candidateSlotAvailable}`); // Лог 3
 
                 if (emailMatch && candidateSlotAvailable) {
                     roomToJoin.candidate = newUser._id;
                     roomToJoin.invitationToken = undefined;
                     roomToJoin.status = 'pending';
                     await roomToJoin.save();
-                    joinedRoom = roomToJoin.toObject();
+                    joinedRoomInfo = { id: roomToJoin._id, status: roomToJoin.status };
+                    console.log('[AUTH CTRL - REGISTER] User joined room, room updated:', roomToJoin._id, 'New status:', roomToJoin.status); // Лог 4
                 } else {
                     if (!emailMatch) {
                         console.warn(`[AUTH CTRL - REGISTER] CONDITION FAIL: Email mismatch. Invited: ${roomToJoin.candidateEmail}, Registered: ${normalizedEmail}`);
@@ -58,31 +66,35 @@ exports.register = async (req, res) => {
                     if (!candidateSlotAvailable) {
                         console.warn(`[AUTH CTRL - REGISTER] CONDITION FAIL: Candidate slot not available. Already assigned to: ${roomToJoin.candidate}`);
                     }
+                    // Важно: если условия не выполнены, комната не обновляется, и у пользователя (кандидата) не будет информации о присоединенной комнате.
+                    // Возможно, стоит вернуть ошибку или специальное сообщение кандидату, если, например, email не совпал.
                 }
+            } else {
+                console.warn(`[AUTH CTRL - REGISTER] Invite token ${inviteToken} not found or room does not exist.`);
             }
-
-
-            const payload = { userId: newUser._id, email: newUser.email, name: newUser.name, role: newUser.role };
-            const authToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-
-            res.status(201).json({
-                message: 'User registered successfully!',
-                token: authToken,
-                user: {
-                    id: newUser._id,
-                    email: newUser.email,
-                    name: newUser.name,
-                    role: newUser.role
-                },
-                joinedRoomId: joinedRoom ? joinedRoom._id : null
-            });
         }
 
+        const payload = { userId: newUser._id, email: newUser.email, name: newUser.name, role: newUser.role };
+        const authToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        console.log('Sending success response for user:', newUser._id);
+        res.status(201).json({
+            message: 'User registered successfully!',
+            token: authToken,
+            user: {
+                id: newUser._id,
+                email: newUser.email,
+                name: newUser.name,
+                role: newUser.role,
+            },
+            ...(joinedRoomInfo && { joinedRoomId: joinedRoomInfo.id })
+        });
+
     } catch (error) {
-        res.status(500).json({ message: 'Server error during registration.' });
+        console.error('Server error during registration:', error);
+        res.status(500).json({ message: 'Server error during registration. Please check logs.' });
     }
-}
+};
 
 exports.login = async (req, res) => {
     try {
@@ -99,7 +111,7 @@ exports.login = async (req, res) => {
             return res.status(400).json({ errors: errorsObject });
         }
 
-        const { email, password } = value;
+        const { email, password, name } = value;
 
         // find user by email
         const user = await User.findOne({ email: email.toLowerCase() });
@@ -113,13 +125,13 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: 'invalid credentials.' });
         }
 
-        // generate jwt token
         const payload = {
             userId: user._id,
             email: user.email,
+            name: user.name,
             role: user.role
         };
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
 
         res.status(200).json({
             message: 'login successful!',

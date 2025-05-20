@@ -1,4 +1,3 @@
-// Импорт необходимых модулей
 const express = require('express');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
@@ -7,11 +6,32 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const http = require('http');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 const { Server } = require("socket.io");
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Genai',
+      version: '1.0.0',
+      description: 'Web platform for conducting technical interviews featuring live video/audio, a synchronized code editor, and AI-generated coding challenges. (API Documentation)',
+    },
+    servers: [
+      {
+        url: 'process.env.BACKEND_URL',
+      },
+    ],
+  },
+  apis: ['./routes/*.js'],  
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 dotenv.config();
 const app = express();
 
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use(cors());
 app.use(express.json());
 
@@ -19,9 +39,8 @@ const httpServer = http.createServer(app);
 
 const io = new Server(httpServer, {
     cors: {
-        origin: "http://localhost:5174",
+        origin: "process.env.FRONTEND_URL",
         methods: ["GET", "POST"]
-        // credentials: true
     }
 });
 console.log('Socket.IO server initialized with CORS for specified origin');
@@ -66,7 +85,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('joinRoom', (data) => { 
+    socket.on('webrtc-ice-candidate', (payload) => {
+        if (payload.toSocketId && payload.candidate && payload.fromSocketId) {
+            io.to(payload.toSocketId).emit('webrtc-ice-candidate', {
+                candidate: payload.candidate,
+                fromSocketId: payload.fromSocketId
+            });
+        } else {
+            console.error('Socket.IO: Invalid data for webrtc-ice-candidate event:', payload);
+        }
+    });
+
+    socket.on('joinRoom', (data) => {
         const { roomId, userId } = data;
         socket.join(roomId);
         console.log(`Socket.IO: User ${userId} (ID: ${socket.id}) joined room ${roomId}`);
@@ -88,8 +118,13 @@ io.on('connection', (socket) => {
 
 
     socket.on('codeChange', (data) => {
-        const { roomId, code } = data;
-        socket.to(roomId).emit('codeUpdate', code);
+        const { roomId, code, userId } = data;
+
+        if (roomId && typeof code === 'string' && userId) {
+            socket.to(roomId).emit('codeChange', { code: code, userId: userId });
+        } else {
+            console.error('Socket.IO: Invalid data for codeChange event. Data:', data, 'Socket ID:', socket.id);
+        }
     });
 
     socket.on('sendSignalOffer', (payload) => {
