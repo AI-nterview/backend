@@ -64,27 +64,7 @@ app.get('/', (req, res) => {
 io.on('connection', (socket) => {
     console.log('Socket.IO: a user connected:', socket.id);
 
-    socket.on('joinRoomAndInitiateCall', (data) => {
-        const { roomId, userId } = data;
-        socket.join(roomId);
-        console.log(`Socket.IO: User ${userId} (socket ${socket.id}) joined room ${roomId}`);
-
-        socket.emit('roomJoined', { roomId: roomId, message: `Successfully joined room ${roomId}` });
-
-        const clientsInRoom = io.sockets.adapter.rooms.get(roomId);
-        if (clientsInRoom) {
-            clientsInRoom.forEach(clientId => {
-                if (clientId !== socket.id) {
-                    console.log(`Socket.IO: Notifying ${clientId} to call new user ${socket.id} in room ${roomId}`);
-                    io.to(clientId).emit('otherUserToCall', { otherUserId: socket.id });
-
-                    console.log(`Socket.IO: Notifying new user ${socket.id} about existing user ${clientId} in room ${roomId}`);
-                    socket.emit('otherUserToCall', { otherUserId: clientId });
-                }
-            });
-        }
-    });
-
+    
     socket.on('webrtc-ice-candidate', (payload) => {
         if (payload.toSocketId && payload.candidate && payload.fromSocketId) {
             io.to(payload.toSocketId).emit('webrtc-ice-candidate', {
