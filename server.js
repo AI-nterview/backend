@@ -60,46 +60,51 @@ app.get('/', (req, res) => {
     res.send('Hello from Interview Platform Backend!');
 });
 
-// AI generated socket.io logic (need to review)
 io.on('connection', (socket) => {
     console.log('Socket.IO: a user connected:', socket.id);
 
-    
+    socket.on('joinRoom', (data) => {
+        const { roomId, userId } = data;
+        socket.join(roomId);
+        console.log(`Socket.IO: User ${userId} (ID: ${socket.id}) joined room ${roomId}`);
+
+        const otherClientsInRoom = Array.from(io.sockets.adapter.rooms.get(roomId) || [])
+                                       .filter(id => id !== socket.id);
+        console.log(`Socket.IO: Other clients in room ${roomId} for new user ${socket.id}:`, otherClientsInRoom);
+        socket.emit('existingUsers', otherClientsInRoom);
+        socket.to(roomId).emit('userJoined', { newUserId: socket.id });
+        socket.emit('roomJoined', { roomId: roomId, message: `You've joined room ${roomId}` }); // Можно оставить для UI
+    });
+
     socket.on('webrtc-ice-candidate', (payload) => {
         if (payload.toSocketId && payload.candidate && payload.fromSocketId) {
             io.to(payload.toSocketId).emit('webrtc-ice-candidate', {
                 candidate: payload.candidate,
-                fromSocketId: payload.fromSocketId
+                fromSocketId: payload.fromSocketId // Это важно!
             });
         } else {
             console.error('Socket.IO: Invalid data for webrtc-ice-candidate event:', payload);
         }
     });
 
-    socket.on('joinRoom', (data) => {
-        const { roomId, userId } = data;
-        socket.join(roomId);
-        console.log(`Socket.IO: User ${userId} (ID: ${socket.id}) joined room ${roomId}`);
-        socket.emit('roomJoined', { roomId: roomId, message: `You've joined room ${roomId}` });
-
-        const clientsInRoom = Array.from(io.sockets.adapter.rooms.get(roomId) || []);
-        console.log(`Socket.IO: Users in room ${roomId}:`, clientsInRoom);
-
-        if (clientsInRoom.length > 1) {
-            const otherClientIds = clientsInRoom.filter(id => id !== socket.id);
-            if (otherClientIds.length > 0) {
-                const existingUserId = otherClientIds[0];
-
-                console.log(`Socket.IO: Telling NEW user ${socket.id} to call EXISTING user ${existingUserId}`);
-                socket.emit('initiateCallToUser', { otherUserId: existingUserId });
-            }
-        }
+    socket.on('sendSignalOffer', (payload) => {
+        console.log(`Socket.IO: User ${payload.callerId} sending OFFER to ${payload.userToSignal}`);
+        io.to(payload.userToSignal).emit('signalOffer', {
+            signal: payload.signal,
+            callerId: payload.callerId // Важно, чтобы принимающий знал, от кого оффер
+        });
     });
 
+    socket.on('sendSignalAnswer', (payload) => {
+        console.log(`Socket.IO: User ${payload.responderId} sending ANSWER to ${payload.callerId}`);
+        io.to(payload.callerId).emit('signalAnswer', {
+            signal: payload.signal,
+            responderId: payload.responderId // Важно, чтобы принимающий знал, от кого ответ
+        });
+    });
 
     socket.on('codeChange', (data) => {
         const { roomId, code, userId } = data;
-
         if (roomId && typeof code === 'string' && userId) {
             socket.to(roomId).emit('codeChange', { code: code, userId: userId });
         } else {
@@ -107,19 +112,9 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('sendSignalOffer', (payload) => {
-        console.log(`Socket.IO: User ${payload.callerId} sending OFFER to ${payload.userToSignal}`);
-        io.to(payload.userToSignal).emit('signalOffer', { signal: payload.signal, callerId: payload.callerId });
-    });
-
-    socket.on('sendSignalAnswer', (payload) => {
-        console.log(`Socket.IO: User ${payload.responderId} sending ANSWER to ${payload.callerId}`);
-        io.to(payload.callerId).emit('signalAnswer', { signal: payload.signal, responderId: payload.responderId });
-    });
-
     socket.on('disconnecting', () => {
         socket.rooms.forEach(roomId => {
-            if (roomId !== socket.id) {
+            if (roomId !== socket.id) { // Не оповещать о выходе из "личной" комнаты сокета
                 console.log(`Socket.IO: User ${socket.id} disconnecting from room ${roomId}`);
                 socket.to(roomId).emit('peerDisconnected', { peerId: socket.id });
             }
